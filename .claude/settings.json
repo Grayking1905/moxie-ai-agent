@@ -1,0 +1,15 @@
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "<sk-43c1fb685a54539a-593c0d-6b4bea18>",
+    "ANTHROPIC_BASE_URL": "http://localhost:20128/v1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "kr/claude-sonnet-4.5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "cx/gpt-5.6-terra-ultra",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "ollamacloud/minimax-m3"
+  },
+  "model": "haiku",
+  "statusLine": {
+    "type": "command",
+    "command": "node \"C:\\Users\\shriv\\.claude\\statusline.js\""
+  }
+}

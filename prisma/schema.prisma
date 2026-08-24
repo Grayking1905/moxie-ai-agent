@@ -1,0 +1,453 @@
+// Moxie AI Commerce Operating Layer
+// Database Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// === Core Entities ===
+
+model Merchant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  currency  String   @default("INR")
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  policy    MerchantPolicy?
+  products  Product[]
+  agents    Agent[]
+  campaigns Campaign[]
+  orders    Order[]
+  carts     Cart[]
+}
+
+model MerchantPolicy {
+  id                     String   @id @default(cuid())
+  merchantId             String   @unique
+  maxTransactionAmount   Int      @default(500000) // ₹5,000 in paisa
+  dailyTransactionLimit  Int      @default(2000000) // ₹20,000 in paisa
+  approvalThreshold      Int      @default(150000) // ₹1,500 in paisa
+  maxDiscountPercent     Int      @default(15)
+  allowBundleDiscount    Boolean  @default(true)
+  allowFreeShipping      Boolean  @default(true)
+  minimumMarginPercent   Int      @default(20)
+  allowedCurrencies      String[] @default(["INR"])
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+}
+
+// === Agent System ===
+
+model Agent {
+  id          String   @id @default(cuid())
+  merchantId  String
+  type        String   // BUYER_AGENT, MERCHANT_AGENT, GROWTH_AGENT, CAMPAIGN_AGENT
+  name        String
+  status      String   @default("ACTIVE")
+  trustScore  Int      @default(100)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  merchant    Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  permissions AgentPermission[]
+  sessions    AgentSession[]
+  actions     AgentAction[]
+  budget      AgentBudget?
+}
+
+model AgentPermission {
+  id         String   @id @default(cuid())
+  agentId    String
+  permission String
+  allowed    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, permission])
+}
+
+model AgentBudget {
+  id              String   @id @default(cuid())
+  agentId         String   @unique
+  dailyLimit      Int      @default(2000000) // ₹20,000 in paisa
+  dailySpent      Int      @default(0)
+  lastResetAt     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
+model AgentSession {
+  id         String   @id @default(cuid())
+  agentId    String
+  customerId String?
+  status     String   @default("ACTIVE")
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  agent    Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  messages AgentMessage[]
+  actions  AgentAction[]
+}
+
+model AgentMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  role      String   // user, assistant, system
+  content   String   @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  session AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model AgentAction {
+  id         String   @id @default(cuid())
+  sessionId  String
+  agentId    String
+  actionType String
+  toolName   String?
+  input      Json?
+  output     Json?
+  status     String   @default("PENDING")
+  reason     String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  session  AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  agent    Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  approval Approval?
+}
+
+// === Product Catalog ===
+
+model Product {
+  id          String   @id @default(cuid())
+  merchantId  String
+  name        String
+  description String   @db.Text
+  price       Int      // Price in paisa
+  currency    String   @default("INR")
+  category    String
+  inventory   Int      @default(0)
+  costPrice   Int?     // Cost in paisa for margin calculation
+  metadata    Json?
+  images      String[] @default([])
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  merchant           Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  variants           ProductVariant[]
+  relationships      ProductRelationship[] @relation("ProductFrom")
+  relatedFrom        ProductRelationship[] @relation("ProductTo")
+  cartItems          CartItem[]
+  orderItems         OrderItem[]
+  recommendations    Recommendation[]
+  campaignProducts   CampaignProduct[]
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  productId String
+  name      String
+  sku       String   @unique
+  price     Int      // Price in paisa
+  inventory Int      @default(0)
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model ProductRelationship {
+  id            String   @id @default(cuid())
+  fromProductId String
+  toProductId   String
+  type          String   // UPSELL, CROSS_SELL, BUNDLE, RELATED
+  score         Float    @default(1.0)
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  fromProduct Product @relation("ProductFrom", fields: [fromProductId], references: [id], onDelete: Cascade)
+  toProduct   Product @relation("ProductTo", fields: [toProductId], references: [id], onDelete: Cascade)
+
+  @@unique([fromProductId, toProductId, type])
+}
+
+// === Commerce Flow ===
+
+model Customer {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  name      String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  carts    Cart[]
+  orders   Order[]
+}
+
+model Cart {
+  id         String   @id @default(cuid())
+  merchantId String
+  customerId String?
+  sessionId  String?
+  status     String   @default("ACTIVE") // ACTIVE, ABANDONED, CONVERTED, EXPIRED
+  currency   String   @default("INR")
+  subtotal   Int      @default(0)
+  discount   Int      @default(0)
+  shipping   Int      @default(0)
+  total      Int      @default(0)
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  merchant Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  customer Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  items    CartItem[]
+  checkout Checkout?
+  order    Order?
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  productId String
+  quantity  Int      @default(1)
+  price     Int      // Price at time of adding
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model Checkout {
+  id         String   @id @default(cuid())
+  cartId     String   @unique
+  status     String   @default("PENDING") // PENDING, APPROVED, REJECTED, COMPLETED
+  total      Int
+  currency   String   @default("INR")
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  cart     Cart      @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  payment  Payment?
+  approval Approval?
+}
+
+model Order {
+  id         String   @id @default(cuid())
+  merchantId String
+  customerId String?
+  cartId     String   @unique
+  orderNumber String  @unique
+  status     String   @default("PENDING") // PENDING, CONFIRMED, PROCESSING, SHIPPED, DELIVERED, CANCELLED, REFUNDED
+  subtotal   Int
+  discount   Int      @default(0)
+  shipping   Int      @default(0)
+  total      Int
+  currency   String   @default("INR")
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  merchant Merchant    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  customer Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  cart     Cart        @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  items    OrderItem[]
+  payment  Payment?
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  productId String
+  quantity  Int
+  price     Int      // Price at time of order
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+// === Payment System ===
+
+model Payment {
+  id                String   @id @default(cuid())
+  orderId           String?  @unique
+  checkoutId        String?  @unique
+  provider          String   @default("razorpay")
+  providerOrderId   String?
+  providerPaymentId String?
+  amount            Int
+  currency          String   @default("INR")
+  status            String   @default("PENDING") // PENDING, PROCESSING, SUCCESS, FAILED, REFUNDED
+  idempotencyKey    String   @unique
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  order    Order?           @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  checkout Checkout?        @relation(fields: [checkoutId], references: [id], onDelete: SetNull)
+  attempts PaymentAttempt[]
+}
+
+model PaymentAttempt {
+  id        String   @id @default(cuid())
+  paymentId String
+  status    String   // INITIATED, SUCCESS, FAILED
+  error     String?  @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+}
+
+// === Recommendations & Growth ===
+
+model Recommendation {
+  id         String   @id @default(cuid())
+  productId  String
+  type       String   // UPSELL, CROSS_SELL, BUNDLE, RELATED
+  targetId   String?  // Target product or customer
+  score      Float
+  reason     String?  @db.Text
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model Campaign {
+  id               String   @id @default(cuid())
+  merchantId       String
+  name             String
+  description      String   @db.Text
+  type             String   // UPSELL, CROSS_SELL, ABANDONED_CART, BUNDLE, PROMOTION
+  status           String   @default("DRAFT") // DRAFT, APPROVED, ACTIVE, COMPLETED, CANCELLED
+  expectedRevenue  Int?
+  actualRevenue    Int?
+  startDate        DateTime?
+  endDate          DateTime?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  merchant Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  actions  CampaignAction[]
+  products CampaignProduct[]
+  results  CampaignResult[]
+  approval Approval?
+}
+
+model CampaignAction {
+  id         String   @id @default(cuid())
+  campaignId String
+  actionType String
+  target     String?
+  metadata   Json?
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+}
+
+model CampaignProduct {
+  id         String   @id @default(cuid())
+  campaignId String
+  productId  String
+  role       String   // PRIMARY, UPSELL, CROSS_SELL, BUNDLE
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, productId, role])
+}
+
+model CampaignResult {
+  id         String   @id @default(cuid())
+  campaignId String
+  metric     String
+  value      Float
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+}
+
+// === Approval System ===
+
+model Approval {
+  id         String   @id @default(cuid())
+  actionId   String?  @unique
+  checkoutId String?  @unique
+  campaignId String?  @unique
+  type       String   // PAYMENT, CAMPAIGN, DISCOUNT, REFUND
+  amount     Int?
+  status     String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  reason     String?  @db.Text
+  approvedBy String?
+  approvedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  action   AgentAction? @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  checkout Checkout?    @relation(fields: [checkoutId], references: [id], onDelete: SetNull)
+  campaign Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+}
+
+// === Audit & Observability ===
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  actorType  String   // USER, AGENT, SYSTEM
+  actorId    String?
+  eventType  String
+  entityType String
+  entityId   String
+  metadata   Json?
+  timestamp  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorType, actorId])
+  @@index([timestamp])
+}
+
+model WebhookEvent {
+  id         String   @id @default(cuid())
+  provider   String
+  eventType  String
+  payload    Json
+  status     String   @default("PENDING") // PENDING, PROCESSED, FAILED
+  processedAt DateTime?
+  error      String?  @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([provider, eventType])
+  @@index([status])
+}
